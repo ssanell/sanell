@@ -1,22 +1,12 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-console.log(
-  "SERVICE KEY:",
-  process.env.SUPABASE_SECRET_KEY ? "FOUND" : "MISSING"
-);
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export async function POST(req: Request) {
   try {
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SECRET_KEY!
-    );
-
     const body = await req.json();
     const { user_id, path, public_url, type, delete_at } = body;
 
-    const { error } = await supabase.from("assets").insert({
+    const { error } = await supabaseAdmin.from("assets").insert({
       user_id,
       path,
       public_url,
@@ -34,9 +24,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error("API CRASH:", err);
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error("API CRASH:", errorMessage, err);
     return NextResponse.json(
-      { error: "Internal server error" },
+      { error: errorMessage },
       { status: 500 }
     );
   }
