@@ -8,41 +8,65 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const checkSession = async () => {
-     const { data } = await supabase.auth.getSession();
-
-     if (data.session) {
-      router.replace("/dashboard");
-     }
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        router.replace("/profile");
+      }
     };
 
     checkSession();
   }, [router]);
 
-  
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
+    // Check allowlist before sending magic link
+    const check = await fetch("/api/auth/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+
+    if (!check.ok) {
+      const result = await check.json();
+      setError(result.error || "You are not on the invite list.");
+      setLoading(false);
+      return;
+    }
+
     const { error } = await supabase.auth.signInWithOtp({
-     email,
-     options: {
-      emailRedirectTo: `${location.origin}/auth/callback`,
-     },
+      email,
+      options: {
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
+      },
     });
 
     if (error) {
       setError(error.message);
     } else {
-      alert("Check your email for the login link.");
+      setSent(true);
     }
 
     setLoading(false);
   };
+
+  if (sent) {
+    return (
+      <main className="p-8 max-w-md mx-auto mt-24 text-center space-y-2">
+        <h1 className="text-2xl font-bold">Check your email</h1>
+        <p className="text-gray-500">
+          We sent a magic link to <strong>{email}</strong>. Click it to sign in.
+        </p>
+      </main>
+    );
+  }
 
   return (
     <main className="p-8 max-w-md mx-auto">
@@ -51,7 +75,7 @@ export default function LoginPage() {
       <form onSubmit={handleLogin} className="space-y-4">
         <input
           type="email"
-          placeholder="you@sanell.online"
+          placeholder="you@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
@@ -60,16 +84,14 @@ export default function LoginPage() {
 
         <button
           type="submit"
-          disabled={loading}
-          className="w-full bg-black text-white py-2 rounded"
+          disabled={loading || !email}
+          className="w-full bg-black text-white py-2 rounded disabled:opacity-50"
         >
-          {loading ? "Sending link…" : "Send magic link"}
+          {loading ? "Checking…" : "Send magic link"}
         </button>
       </form>
 
-      {error && (
-        <p className="text-red-500 mt-4 text-sm">{error}</p>
-      )}
+      {error && <p className="text-red-500 mt-4 text-sm">{error}</p>}
     </main>
   );
 }

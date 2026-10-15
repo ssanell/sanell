@@ -1,121 +1,342 @@
 "use client";
 
 import { supabase } from "@/lib/supabaseClient";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
 
-export default function ImageHostPage() {
-  const [file, setFile] = useState<File | null>(null);
-  const [deleteAfter, setDeleteAfter] = useState("never");
-
-  const handleUpload = async () => {
-  if (!file) return;
-
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-
-  if (!user || userError) {
-    alert("You must be logged in");
-    return;
-  }
-
-  // extension (safe)
-  const ext = file.name.split(".").pop() || "bin";
-
-  // filename + path
-  const filename = `${crypto.randomUUID()}.${ext}`;
-  const path = filename;
-
-  // upload
-  const { error: uploadError } = await supabase.storage
-    .from("assets-public")
-    .upload(path, file);
-
-  if (uploadError) {
-    alert(uploadError.message);
-    return;
-  }
-
-  const { data: publicData } = supabase.storage
-    .from("assets-public")
-    .getPublicUrl(path);
-
-  const publicUrl = publicData.publicUrl;
-
-  // compute delete_at
-  let delete_at: string | null = null;
-  if (deleteAfter !== "never") {
-    const now = new Date();
-    if (deleteAfter === "1h") now.setHours(now.getHours() + 1);
-    if (deleteAfter === "1d") now.setDate(now.getDate() + 1);
-    if (deleteAfter === "1w") now.setDate(now.getDate() + 7);
-    delete_at = now.toISOString();
-  }
-
-  // 👇 NOW it exists, so logging is safe
-  console.log("INSERT PAYLOAD:", {
-    user_id: user.id,
-    path,
-    public_url: publicUrl,
-    type: file.type,
-    delete_at,
-  });
-
-  const res = await fetch("/api/assets", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    user_id: user.id,
-    path,
-    public_url: publicUrl,
-    type: file.type,
-    delete_at,
-  }),
-});
-
-const result = await res.json();
-
-if (!res.ok) {
-  alert(result.error || "Failed to save asset");
-  return;
-}
-
-  alert(publicUrl);
+type Asset = {
+  id: string;
+  path: string;
+  public_url: string;
+  type: string;
+  delete_at: string | null;
+  created_at: string;
 };
 
+function formatExpiry(deleteAt: string | null): string {
+  if (!deleteAt) return "Never";
+  const diff = new Date(deleteAt).getTime() - Date.now();
+  if (diff <= 0) return "Expired";
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+  if (hours < 24) return `Expires in ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `Expires in ${days}d`;
+}
+
+export default function ImageHostPage() {
+  const router = useRouter();
+
+  // uploader state
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [deleteAfter, setDeleteAfter] = useState("never");
+  const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // gallery state
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [loadingAssets, setLoadingAssets] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState("");
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+  const applyFile = (f: File) => {
+    if (!f.type.startsWith("image/")) {
+      setError("Only image files are supported.");
+      return;
+    }
+    if (f.size > MAX_FILE_SIZE) {
+      setError("File must be under 10MB.");
+      return;
+    }
+    setError(null);
+    setFile(f);
+    setUploadedUrl(null);
+    setPreviewUrl(URL.createObjectURL(f));
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const droppedFile = e.dataTransfer.files?.[0];
+    if (!droppedFile) return;
+    applyFile(droppedFile);
+  };
+
+  async function loadAssets() {
+    setLoadingAssets(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (!user) {
+        setAssets([]);
+        setDisplayName("");
+        return;
+      }
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("display_name")
+        .eq("id", user.id)
+        .single();
+
+      setDisplayName(profile?.display_name || user.email?.split("@")[0] || "your");
+
+      const { data, error: fetchError } = await supabase
+        .from("assets")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (fetchError) {
+        setError(fetchError.message);
+      } else {
+        setAssets(data ?? []);
+      }
+    } catch (e) {
+      setError("Failed to load assets.");
+    } finally {
+      setLoadingAssets(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAssets();
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, []);
+
+  const handleUpload = async () => {
+    if (!file) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (!user || userError) {
+        setError("You must be logged in.");
+        return;
+      }
+
+      const fileId = crypto.randomUUID();
+      const fileExt = file.name.split(".").pop() || "bin";
+      const filePath = `${fileId}.${fileExt}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("assets-public")
+        .upload(filePath, file);
+
+      if (uploadError) {
+        setError(uploadError.message);
+        return;
+      }
+
+      const { data: publicData } = supabase.storage
+        .from("assets-public")
+        .getPublicUrl(filePath);
+
+      const publicUrl = publicData.publicUrl;
+
+      const payload = {
+        path: filePath,
+        public_url: publicUrl,
+        type: file.type,
+        size: file.size,
+        delete_after: deleteAfter,
+      };
+
+      const res = await fetch("/api/assets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await res.json();
+
+      if (!res.ok) {
+        setError(result.error || "Failed to save asset.");
+        return;
+      }
+
+      setUploadedUrl(publicUrl);
+      setFile(null);
+      setPreviewUrl(null);
+      // reload gallery
+      await loadAssets();
+    } catch (e) {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCopy = () => {
+    if (!uploadedUrl) return;
+    navigator.clipboard.writeText(uploadedUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDelete = async (asset: Asset) => {
+    setDeletingId(asset.id);
+
+    const res = await fetch(`/api/assets/${asset.id}`, { method: "DELETE" });
+
+    if (res.ok) {
+      setAssets((prev) => prev.filter((a) => a.id !== asset.id));
+    } else {
+      const result = await res.json();
+      alert(result.error || "Failed to delete.");
+    }
+
+    setDeletingId(null);
+  };
+
   return (
-    <main className="p-8 max-w-xl mx-auto space-y-6">
-      <h1 className="text-2xl font-bold">Image Hosting</h1>
+    <div
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      className="p-8 max-w-4xl mx-auto space-y-6"
+    >
+      {isDragging && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 pointer-events-none">
+          <div className="border-2 border-dashed border-white rounded-xl p-12 text-white text-xl font-semibold bg-black/40">
+            Drop your image here
+          </div>
+        </div>
+      )}
 
-      <input
-        type="file"
-        accept="image/*"
-        onChange={(e) => setFile(e.target.files?.[0] || null)}
-      />
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Image Hosting</h1>
+        <div />
+      </div>
 
-      <select
-        value={deleteAfter}
-        onChange={(e) => setDeleteAfter(e.target.value)}
-        className="border rounded px-2 py-1"
-      >
-        <option value="never">Never delete</option>
-        <option value="1h">Delete after 1 hour</option>
-        <option value="1d">Delete after 1 day</option>
-        <option value="1w">Delete after 1 week</option>
-      </select>
+      <p className="text-gray-500">Drag and drop your image anywhere here or choose a file below.</p>
 
-      <button
-         onClick={handleUpload}
-         disabled={!file}
-         className="bg-black text-white px-4 py-2 rounded disabled:opacity-50"
-      >
-        Upload
-      </button>
+      <div className="flex flex-col gap-4">
+        <div className="w-full">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) applyFile(f);
+            }}
+          />
 
-    </main>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button onClick={() => fileInputRef.current?.click()} className="border px-4 py-2 rounded">
+              Choose Image
+            </button>
+
+            <select
+              value={deleteAfter}
+              onChange={(e) => setDeleteAfter(e.target.value)}
+              className="border rounded px-2 py-1"
+            >
+              <option value="never">Never delete</option>
+              <option value="1h">Delete after 1 hour</option>
+              <option value="1d">Delete after 1 day</option>
+              <option value="1w">Delete after 1 week</option>
+            </select>
+
+            <button
+              onClick={handleUpload}
+              disabled={!file || loading}
+              className="bg-black text-white px-4 py-2 rounded disabled:opacity-50 flex items-center gap-2"
+            >
+              {loading && <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+              {loading ? "Uploading..." : "Upload"}
+            </button>
+          </div>
+
+          {previewUrl && !uploadedUrl && (
+            <div className="space-y-1 mt-3">
+              <p className="text-sm text-gray-600">Selected: {file?.name}</p>
+              <img src={previewUrl} alt="Preview" className="max-h-48 rounded border" />
+            </div>
+          )}
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+
+          {uploadedUrl && (
+            <div className="space-y-3 border p-4 rounded mt-3">
+              <img src={uploadedUrl} alt="Uploaded image" className="max-h-64 rounded" />
+              <div className="flex gap-2">
+                <input value={uploadedUrl} readOnly className="border px-2 py-1 flex-1 rounded" />
+                <button onClick={handleCopy} className="bg-gray-200 px-3 rounded">{copied ? "Copied!" : "Copy"}</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="w-full">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">{displayName ? `${displayName}'s gallery` : 'Gallery'}</h2>
+            <button
+              onClick={() => loadAssets()}
+              className="text-sm bg-black text-white px-4 py-2 rounded-full hover:bg-gray-800 transition-colors"
+            >
+              refresh
+            </button>
+          </div>
+
+          {loadingAssets ? (
+            <p className="text-gray-400 text-sm">loading...</p>
+          ) : assets.length === 0 ? (
+            <p className="text-gray-400 text-sm">no uploads yet.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mt-3">
+              {assets.map((asset) => (
+                <div key={asset.id} className="border rounded overflow-hidden flex flex-col">
+                  <img
+                    src={asset.public_url}
+                    alt={asset.path}
+                    className="w-full h-36 object-cover"
+                  />
+                  <div className="p-2 flex flex-col gap-1 flex-1">
+                    <p className="text-xs text-gray-700 truncate" title={asset.path}>
+                      {asset.path}
+                    </p>
+                    <p className="text-xs text-gray-400">{formatExpiry(asset.delete_at)}</p>
+                    <button
+                      onClick={() => handleDelete(asset)}
+                      disabled={deletingId === asset.id}
+                      className="mt-auto text-xs text-red-500 hover:underline disabled:opacity-50 text-left"
+                    >
+                      {deletingId === asset.id ? "deleting..." : "delete"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
