@@ -23,6 +23,8 @@ type LiveCursor = {
 };
 
 const BRUSH_SIZE = 6;
+const CANVAS_WIDTH = 1600;
+const CANVAS_HEIGHT = 900;
 
 function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke) {
   if (stroke.points.length < 2) return;
@@ -78,6 +80,10 @@ export default function WhiteboardPage() {
 
   useEffect(() => {
     const init = async () => {
+      // Strokes are public, so load them for logged-out visitors too.
+      // Not awaited: the canvas and the user lookup load in parallel.
+      loadStrokes();
+
       const { data: { user: authUser } } = await supabase.auth.getUser();
       if (!authUser) return;
 
@@ -95,7 +101,6 @@ export default function WhiteboardPage() {
     };
 
     init();
-    loadStrokes();
   }, [loadStrokes]);
 
   useEffect(() => {
@@ -317,8 +322,8 @@ export default function WhiteboardPage() {
 
         <canvas
           ref={canvasRef}
-          width={1600}
-          height={900}
+          width={CANVAS_WIDTH}
+          height={CANVAS_HEIGHT}
           className="w-full h-full"
           style={{
             cursor: user ? "crosshair" : "not-allowed",
@@ -334,19 +339,16 @@ export default function WhiteboardPage() {
         />
 
         {/* Live cursors */}
+        {/* The canvas stretches to fill this container, so percentages of the
+            canvas coordinate space line up exactly (no ref reads during render). */}
         {Object.values(liveCursors).map((cursor) => {
-          const canvas = canvasRef.current;
-          if (!canvas) return null;
-          const rect = canvas.getBoundingClientRect();
-          const scaleX = rect.width / canvas.width;
-          const scaleY = rect.height / canvas.height;
           return (
             <div
               key={cursor.user_id}
               className="absolute pointer-events-none flex items-center gap-1"
               style={{
-                left: cursor.x * scaleX,
-                top: cursor.y * scaleY,
+                left: `${(cursor.x / CANVAS_WIDTH) * 100}%`,
+                top: `${(cursor.y / CANVAS_HEIGHT) * 100}%`,
                 transform: "translate(8px, 8px)",
               }}
             >

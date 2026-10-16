@@ -2,7 +2,6 @@
 
 import { supabase } from "@/lib/supabaseClient";
 import { useState, useRef, useEffect } from "react";
-import { useRouter } from "next/navigation";
 
 type Asset = {
   id: string;
@@ -14,18 +13,17 @@ type Asset = {
 };
 
 function formatExpiry(deleteAt: string | null): string {
-  if (!deleteAt) return "Never";
-  const diff = new Date(deleteAt).getTime() - Date.now();
-  if (diff <= 0) return "Expired";
-  const hours = Math.floor(diff / (1000 * 60 * 60));
-  if (hours < 24) return `Expires in ${hours}h`;
-  const days = Math.floor(hours / 24);
-  return `Expires in ${days}d`;
+  if (!deleteAt) return "Never expires";
+  const date = new Date(deleteAt);
+  // Shown in the viewer's own time zone, e.g. "Oct 17, 2026, 3:42 PM"
+  const when = date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  return date.getTime() <= Date.now() ? `Expired ${when}` : `Expires ${when}`;
 }
 
 export default function ImageHostPage() {
-  const router = useRouter();
-
   // uploader state
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -79,7 +77,8 @@ export default function ImageHostPage() {
   };
 
   async function loadAssets() {
-    setLoadingAssets(true);
+    // loadingAssets starts as true, so the first load needs no setState here.
+    // The refresh button turns the spinner on itself.
     try {
       const { data: { user } } = await supabase.auth.getUser();
 
@@ -108,7 +107,7 @@ export default function ImageHostPage() {
       } else {
         setAssets(data ?? []);
       }
-    } catch (e) {
+    } catch {
       setError("Failed to load assets.");
     } finally {
       setLoadingAssets(false);
@@ -116,11 +115,18 @@ export default function ImageHostPage() {
   }
 
   useEffect(() => {
-    loadAssets();
+    const init = async () => {
+      await loadAssets();
+    };
+    init();
+  }, []);
+
+  // Free the preview's object URL whenever it changes or the page unmounts.
+  useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
-  }, []);
+  }, [previewUrl]);
 
   const handleUpload = async () => {
     if (!file) return;
@@ -139,9 +145,12 @@ export default function ImageHostPage() {
         return;
       }
 
+      // Files live in the user's own folder. The server only accepts
+      // "<user id>/<uuid>.<ext>" paths.
       const fileId = crypto.randomUUID();
-      const fileExt = file.name.split(".").pop() || "bin";
-      const filePath = `${fileId}.${fileExt}`;
+      const rawExt = file.name.split(".").pop() ?? "";
+      const fileExt = rawExt.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "img";
+      const filePath = `${user.id}/${fileId}.${fileExt}`;
 
       const { error: uploadError } = await supabase.storage
         .from("assets-public")
@@ -160,7 +169,6 @@ export default function ImageHostPage() {
 
       const payload = {
         path: filePath,
-        public_url: publicUrl,
         type: file.type,
         size: file.size,
         delete_after: deleteAfter,
@@ -184,7 +192,7 @@ export default function ImageHostPage() {
       setPreviewUrl(null);
       // reload gallery
       await loadAssets();
-    } catch (e) {
+    } catch {
       setError("Something went wrong. Please try again.");
     } finally {
       setLoading(false);
@@ -201,16 +209,18 @@ export default function ImageHostPage() {
   const handleDelete = async (asset: Asset) => {
     setDeletingId(asset.id);
 
-    const res = await fetch(`/api/assets/${asset.id}`, { method: "DELETE" });
+    try {
+      const res = await fetch(`/api/assets/${asset.id}`, { method: "DELETE" });
 
-    if (res.ok) {
-      setAssets((prev) => prev.filter((a) => a.id !== asset.id));
-    } else {
-      const result = await res.json();
-      alert(result.error || "Failed to delete.");
+      if (res.ok) {
+        setAssets((prev) => prev.filter((a) => a.id !== asset.id));
+      } else {
+        const result = await res.json().catch(() => null);
+        alert(result?.error || "Failed to delete.");
+      }
+    } finally {
+      setDeletingId(null);
     }
-
-    setDeletingId(null);
   };
 
   return (
@@ -298,7 +308,10 @@ export default function ImageHostPage() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">{displayName ? `${displayName}'s gallery` : 'Gallery'}</h2>
             <button
-              onClick={() => loadAssets()}
+              onClick={() => {
+                setLoadingAssets(true);
+                loadAssets();
+              }}
               className="text-sm bg-black text-white px-4 py-2 rounded-full hover:bg-gray-800 transition-colors"
             >
               refresh

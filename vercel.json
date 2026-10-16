@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/delete-expired-assets",
-      "schedule": "0 * * * *"
+      "schedule": "0 3 * * *"
     }
   ]
 }

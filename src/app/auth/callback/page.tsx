@@ -15,6 +15,8 @@ export default function AuthCallbackPage() {
     const errorDescription = params.get("error_description");
 
     if (errorDescription) {
+      // Reading the URL hash is syncing with an external system, so setting state here is intended.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setError(errorDescription.replace(/\+/g, " "));
       return;
     }

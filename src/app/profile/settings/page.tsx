@@ -23,10 +23,16 @@ export default function ProfileSettingsPage() {
     const load = async () => {
       const { data: { user } } = await supabase.auth.getUser();
 
+      // Session may have expired since the proxy ran.
+      if (!user) {
+        router.replace("/login");
+        return;
+      }
+
       const { data: profile } = await supabase
         .from("profiles")
         .select("*")
-        .eq("id", user!.id)
+        .eq("id", user.id)
         .single();
 
       if (profile) {
@@ -40,7 +46,7 @@ export default function ProfileSettingsPage() {
     };
 
     load();
-  }, []);
+  }, [router]);
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -60,7 +66,11 @@ export default function ProfileSettingsPage() {
     setSuccess(false);
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) {
+      setError("You must be logged in.");
+      setSaving(false);
+      return;
+    }
 
     let avatar_url = currentAvatarUrl;
 
@@ -82,7 +92,8 @@ export default function ProfileSettingsPage() {
         .from("assets-public")
         .getPublicUrl(path);
 
-      avatar_url = urlData.publicUrl;
+      // The path is reused on every upload, so add a version to bypass cached copies.
+      avatar_url = `${urlData.publicUrl}?v=${Date.now()}`;
     }
 
     const { error: updateError } = await supabase

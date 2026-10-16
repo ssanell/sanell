@@ -2,7 +2,7 @@
 
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const PALETTE = [
   { hex: "#5F4037", name: "beaver bum" },
@@ -49,32 +49,7 @@ export default function AdminPage() {
   const [colorPickerFor, setColorPickerFor] = useState<string | null>(null);
   const [savingColor, setSavingColor] = useState(false);
 
-  useEffect(() => {
-    const init = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-
-      // Proxy already guards against unauthenticated access,
-      // but we still need to check is_admin here
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("is_admin")
-        .eq("id", user!.id)
-        .single();
-
-      if (!profile?.is_admin) {
-        router.replace("/");
-        return;
-      }
-
-      setAuthorized(true);
-      await loadData();
-      setLoading(false);
-    };
-
-    init();
-  }, [router]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     const { data: strokeData } = await supabase
       .from("whiteboard_strokes")
       .select("*")
@@ -105,46 +80,104 @@ export default function AdminPage() {
     }
 
     setUsers(Object.values(userMap).sort((a, b) => b.strokeCount - a.strokeCount));
-  };
+  }, []);
+
+  useEffect(() => {
+    const init = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+
+      // Session may have expired since the proxy ran.
+      if (!user) {
+        router.replace("/login");
+        return;
+      }
+
+      // Proxy already guards against unauthenticated access,
+      // but we still need to check is_admin here
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("is_admin")
+        .eq("id", user.id)
+        .single();
+
+      if (!profile?.is_admin) {
+        router.replace("/");
+        return;
+      }
+
+      setAuthorized(true);
+      await loadData();
+      setLoading(false);
+    };
+
+    init();
+  }, [router, loadData]);
 
   const deleteStroke = async (id: string) => {
+    const stroke = strokes.find((s) => s.id === id);
     setDeletingId(id);
-    await fetch(`/api/admin/strokes/${id}`, { method: "DELETE" });
-    setStrokes((prev) => prev.filter((s) => s.id !== id));
-    setUsers((prev) =>
-      prev.map((u) => {
-        const stroke = strokes.find((s) => s.id === id);
-        if (stroke && u.user_id === stroke.user_id) {
-          return { ...u, strokeCount: u.strokeCount - 1 };
-        }
-        return u;
-      }).filter((u) => u.strokeCount > 0)
-    );
-    setDeletingId(null);
+
+    try {
+      const res = await fetch(`/api/admin/strokes/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        alert("Failed to delete stroke.");
+        return;
+      }
+
+      setStrokes((prev) => prev.filter((s) => s.id !== id));
+      setUsers((prev) =>
+        prev
+          .map((u) =>
+            stroke && u.user_id === stroke.user_id
+              ? { ...u, strokeCount: u.strokeCount - 1 }
+              : u
+          )
+          .filter((u) => u.strokeCount > 0)
+      );
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const deleteUserStrokes = async (userId: string) => {
     setDeletingUserId(userId);
-    await fetch(`/api/admin/strokes/user/${userId}`, { method: "DELETE" });
-    setStrokes((prev) => prev.filter((s) => s.user_id !== userId));
-    setUsers((prev) => prev.filter((u) => u.user_id !== userId));
-    setDeletingUserId(null);
+
+    try {
+      const res = await fetch(`/api/admin/strokes/user/${userId}`, { method: "DELETE" });
+      if (!res.ok) {
+        alert("Failed to delete strokes.");
+        return;
+      }
+
+      setStrokes((prev) => prev.filter((s) => s.user_id !== userId));
+      setUsers((prev) => prev.filter((u) => u.user_id !== userId));
+    } finally {
+      setDeletingUserId(null);
+    }
   };
 
   const changeUserColor = async (userId: string, newColor: string) => {
     setSavingColor(true);
-    const { error } = await supabase
-      .from("profiles")
-      .update({ marker_color: newColor })
-      .eq("id", userId);
 
-    if (!error) {
+    try {
+      const res = await fetch(`/api/admin/profiles/${userId}/color`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ color: newColor }),
+      });
+
+      if (!res.ok) {
+        alert("Failed to change color.");
+        return;
+      }
+
       setUsers((prev) =>
-        prev.map((u) => u.user_id === userId ? { ...u, color: newColor } : u)
+        prev.map((u) => (u.user_id === userId ? { ...u, color: newColor } : u))
       );
       setColorPickerFor(null);
+    } finally {
+      setSavingColor(false);
     }
-    setSavingColor(false);
   };
 
   if (loading) {

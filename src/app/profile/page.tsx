@@ -54,13 +54,19 @@ export default function ProfilePage() {
     const load = async () => {
       const { data: { user } } = await supabase.auth.getUser();
 
-      setEmail(user!.email ?? "");
-      setJoinDate(user!.created_at);
+      // Session may have expired since the proxy ran.
+      if (!user) {
+        router.replace("/login");
+        return;
+      }
+
+      setEmail(user.email ?? "");
+      setJoinDate(user.created_at);
 
       const { data: profileData } = await supabase
         .from("profiles")
         .select("*")
-        .eq("id", user!.id)
+        .eq("id", user.id)
         .single();
 
       if (profileData) setProfile(profileData);
@@ -68,7 +74,7 @@ export default function ProfilePage() {
       const { data: assets } = await supabase
         .from("assets")
         .select("id, public_url, path, size")
-        .eq("user_id", user!.id)
+        .eq("user_id", user.id)
         .order("created_at", { ascending: false });
 
       const totalSize = assets?.reduce((sum, a) => sum + (a.size ?? 0), 0) ?? 0;
@@ -83,7 +89,7 @@ export default function ProfilePage() {
     };
 
     load();
-  }, []);
+  }, [router]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -168,7 +174,7 @@ export default function ProfilePage() {
             <p className="text-xs uppercase tracking-[0.2em] text-gray-400">gallery</p>
             {recentAssets.length > 0 && (
               <button
-                onClick={() => router.push("/gallery")}
+                onClick={() => router.push("/tools/image-host")}
                 className="text-xs text-gray-400 hover:text-black underline underline-offset-4 transition-colors"
               >
                 view all →
@@ -192,7 +198,7 @@ export default function ProfilePage() {
                 <div
                   key={asset.id}
                   className="aspect-square rounded overflow-hidden bg-gray-100 cursor-pointer hover:opacity-90 transition-opacity"
-                  onClick={() => router.push("/gallery")}
+                  onClick={() => router.push("/tools/image-host")}
                 >
                   <img
                     src={asset.public_url}
